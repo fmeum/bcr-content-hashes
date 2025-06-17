@@ -1,0 +1,85 @@
+name: Update Bazel Module Dirhashes
+
+on:
+  schedule:
+    - cron: '0 0 * * *' # Run daily at midnight UTC
+  workflow_dispatch: {} # Allow manual triggering
+
+jobs:
+  update-dirhashes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@17d0e2bd7d51742c71671bd19fa12bdc9d40a3d6 # v2.8.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout current repository
+        uses: actions/checkout@v4
+
+      - name: Checkout Bazel Central Registry
+        uses: actions/checkout@v4
+        with:
+          repository: bazelbuild/bazel-central-registry
+          path: bcr
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Find and filter URLs
+        id: find_urls
+        run: |
+          mkdir -p scripts
+          # Create an empty __init__.py to ensure the directory can be treated as a package if needed by other tools
+          # For this script, it's not strictly necessary but good practice for a scripts directory.
+          touch scripts/__init__.py
+          # The script content will be written by the subtask here
+          python scripts/find_urls.py bcr > filtered_urls.txt
+          echo "Found $(wc -l < filtered_urls.txt) URLs."
+        working-directory: ${{ github.workspace }}
+
+      - name: Upload filtered URLs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: filtered-urls
+          path: filtered_urls.txt
+
+      - name: Download filtered URLs artifact (if using separate jobs - adjust if same job)
+        uses: actions/download-artifact@v4
+        with:
+          name: filtered-urls
+          path: . # Download to current workspace directory
+
+      - name: Install Python dependencies
+        run: pip install requests
+
+      - name: Interact with proxy.golang.org to get dirhashes
+        id: get_dirhashes
+        run: |
+          python scripts/proxy_interaction.py filtered_urls.txt dirhashes.txt
+          echo "Dirhash processing complete. Results in dirhashes.txt"
+        working-directory: ${{ github.workspace }}
+
+      - name: Upload dirhashes artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dirhashes
+          path: dirhashes.txt
+
+      - name: Download dirhashes artifact (if using separate jobs - adjust if same job)
+        uses: actions/download-artifact@v4
+        with:
+          name: dirhashes
+          path: . # Download to current workspace directory
+
+      - name: Create and commit dirhash files
+        run: |
+          python scripts/commit_dirhashes.py dirhashes.txt --output-dir dirhashes_output
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # Important for push
+        working-directory: ${{ github.workspace }}
+
+      - name: Final step
+        run: echo "Workflow finished."
